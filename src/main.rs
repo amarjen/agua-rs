@@ -12,8 +12,11 @@ use tera::{Context, Tera};
 use configparser::ini::Ini;
 use postgres::{Client, NoTls};
 use std::error::Error;
-mod dbactions;
-use dbactions::create::*;
+
+mod actions;
+use actions::db;
+//use db::create::*;
+//use db::create::*;
 
 mod cdp;
 use cdp::Contador;
@@ -29,14 +32,14 @@ struct Cli {
     periodo: String,
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-struct Lectura {
-    socio: i16,
-    periodo: String,
-    lectura: i16,
-}
-
+// #[derive(Debug)]
+// #[allow(dead_code)]
+// struct Lectura {
+    // socio: i16,
+    // periodo: String,
+    // lectura: i16,
+// }
+//
 #[derive(Debug, Serialize)]
 struct Concepto {
     nombre: String,
@@ -70,14 +73,14 @@ impl Recibo {
         socio: i16,
         derrama: f32,
     ) -> Result<Recibo, Box<dyn Error>> {
-        let lecturas: [i16; 2] = get_lecturas(client, periodo, socio)?;
+        let lecturas: [i16; 2] = db::get_lecturas(client, periodo, socio)?;
         let consumo = lecturas[1] - lecturas[0];
 
         let r = Recibo {
             periodo: String::from(periodo),
             socio: socio,
-            nombre: get_socio(client, socio)?,
-            iban: get_iban(client, socio)?,
+            nombre: db::get_socio(client, socio)?,
+            iban: db::get_iban(client, socio)?,
             lecturas: lecturas,
             consumo: consumo,
             consumo_bloques: consumo_por_bloques(consumo, &Contador::Usuario),
@@ -159,9 +162,8 @@ fn Continue() -> () {
         .interact_opt()
         .unwrap()
     {
-        Some(true) => (),
         Some(false) => process::exit(0),
-        None => (),
+        _ => (),
     }
 }
 
@@ -188,7 +190,7 @@ struct Filas {
     total: String,
 }
 
-fn leer_ods(periodo: &str) -> Vec<Lectura> {
+fn leer_ods(periodo: &str) -> Vec<db::Lectura> {
     let (n_periodo, year) = parse_periodo(&periodo);
 
     let month = match n_periodo {
@@ -202,15 +204,15 @@ fn leer_ods(periodo: &str) -> Vec<Lectura> {
     };
 
     let mut excel: Ods<_> = open_workbook(format!("lectura{year}.ods")).unwrap();
-    let mut v: Vec<Lectura> = Vec::new();
+    let mut v: Vec<db::Lectura> = Vec::new();
 
     if let Some(Ok(r)) = excel.worksheet_range(&format!("{month:02}{year}")) {
         for row in r.rows() {
             if row[0].is_float() && row[4].is_float() {
-                v.push(Lectura {
-                    socio: row[0].get_float().unwrap() as i16,
+                v.push(db::Lectura {
+                    socio: row[0].get_float().unwrap() as i64,
                     periodo: String::from(periodo),
-                    lectura: row[4].get_float().unwrap() as i16,
+                    lectura: row[4].get_float().unwrap() as i64,
                 });
             }
         }
@@ -290,18 +292,21 @@ fn periodo_anterior(id_periodo: &str) -> String {
 }
 
 fn get_derrama_por_socio(client: &mut Client, id_periodo: &str) -> Result<f32, Box<dyn Error>> {
-    let fra_hidrogea = importe(get_consumo_general(client, id_periodo)?, &Contador::General);
+    let fra_hidrogea = importe(
+        db::get_consumo_general(client, id_periodo)?,
+        &Contador::General,
+    );
 
     let mut consumos: Vec<f32> = Vec::new();
 
-    for consumo in get_consumos(client, &id_periodo)?.into_iter() {
+    for consumo in db::get_consumos(client, &id_periodo)?.into_iter() {
         let i = importe(consumo as i16, &Contador::Usuario);
         consumos.push(i);
     }
 
     let total_socios: f32 = consumos.iter().sum();
     let derrama_importe = fra_hidrogea - total_socios;
-    let num_socios: i64 = get_socios_activos_count(client)?;
+    let num_socios: i64 = db::get_socios_activos_count(client)?;
 
     Ok(derrama_importe / num_socios as f32)
 }
@@ -384,11 +389,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut client = Client::connect(uri, NoTls)?;
 
     // Leer lecturas de fichero ODS
-    let _lecturas = leer_ods(&cli.periodo);
+    let lecturas = leer_ods(&cli.periodo);
 
     // TODO:
     // en este punto hay que añadir las lecturas a la base de datos
-    //insert_lecturas_bbdd(&client. &lecturas).expect("Error de bbdd");
+    db::registrar_lecturas(&mut client, lecturas).expect("Error al registrar lecturas");
 
     // TODO:
     // Comprobar que todos los socios activos tienen lectura.
@@ -396,7 +401,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut recibos: Vec<Recibo> = Vec::new();
 
     let derrama_por_socio: f32 = get_derrama_por_socio(&mut client, &cli.periodo)?;
-    for socio in get_socios_activos(&mut client)? {
+    for socio in db::get_socios_activos(&mut client)? {
         recibos.push(Recibo::new(
             &mut client,
             &cli.periodo,
@@ -420,6 +425,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .to_string();
 
     println!("{table}");
+    Continue();
 
     // Generar Recibos .md
     // TODO: Completar plantilla y cambiar output a ficheros
@@ -428,12 +434,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // derrama
 
     let fra_hidrogea = importe(
-        get_consumo_general(&mut client, &cli.periodo)?,
+        db::get_consumo_general(&mut client, &cli.periodo)?,
         &Contador::General,
     );
 
     let total_socios: f32 = get_importe_total_socios(&recibos);
-    let derrama = get_derrama(&mut client, &cli.periodo)?;
+    let derrama = db::get_derrama(&mut client, &cli.periodo)?;
     let derrama_importe = fra_hidrogea - total_socios;
     let derrama_por_usuario = derrama_importe / 45.0;
 
@@ -441,15 +447,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Facturas Socios: {total_socios:?}");
     println!("Derrama: {derrama:?} m3");
     println!("Derrama importe: {derrama_importe:?} eur , {derrama_por_usuario}");
-
-    match Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("¿Continuar con la generación de archivos? (plots, recibos, remesa)")
-        .interact_opt()
-        .unwrap()
-    {
-        Some(false) => process::exit(0),
-        _ => (),
-    }
 
     genera_remesa_excel(&recibos, "test.xlsx");
     Ok(())

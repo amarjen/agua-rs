@@ -1,4 +1,5 @@
 Cargo.lock
 *.ods
+*.xlsx
 /target
 /doc

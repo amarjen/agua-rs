@@ -1,8 +1,16 @@
 // This is like any another rust file
 // every function we write here in the "pub mod create{}" and declared as public, can be invoked later by using "mod dbactions;"
-pub mod create {
+pub mod db {
     use postgres::types::Type;
     use postgres::{Client, Error, NoTls}; // Used to map rust types to postgres types
+
+    #[derive(Debug)]
+    #[allow(dead_code)]
+    pub struct Lectura {
+        pub socio: i64,
+        pub periodo: String,
+        pub lectura: i64,
+    }
 
     #[derive(Debug)] // This macro allows struct to be debugged
     struct Socio {
@@ -108,5 +116,17 @@ pub mod create {
     pub fn get_socios_activos_count(client: &mut Client) -> Result<i64, Error> {
         let row = client.query_one("select count(id_socio) from socios_activos;", &[])?;
         Ok(row.get(0))
+    }
+
+    pub fn registrar_lecturas(client: &mut Client, lecturas: Vec<Lectura>) -> Result<(), Error> {
+        for lectura in lecturas {
+            client.execute(
+                "INSERT INTO lecturas (id_socio, id_periodo, m3) VALUES ($1, $2, $3) \
+                ON CONFLICT ON CONSTRAINT socio_periodo \
+                DO UPDATE SET m3 = $3;",// WHERE id_socio=$1 AND id_periodo=$2;",
+                &[&lectura.socio, &lectura.periodo, &lectura.lectura],
+            ).expect("error al registrar lecturas");
+        }
+        Ok(())
     }
 }
